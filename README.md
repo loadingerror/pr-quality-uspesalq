@@ -24,7 +24,7 @@ flowchart LR
     SLM -->|RPC reply| MQ
     MQ --> Worker
     Worker --> Report[reports/*.md + *.json]
-    Worker -. optional .->|PR comment| GH
+    Worker -. optional PR comment .-> GH
 ```
 
 ## Quick local start
