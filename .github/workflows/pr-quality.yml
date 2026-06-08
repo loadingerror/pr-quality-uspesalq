@@ -1,0 +1,44 @@
+name: PR Quality Analyzer
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  analyze-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_WEBHOOK_SECRET: local-ci
+      POST_PR_COMMENT: "true"
+      SLM_BACKEND: mock
+      DOWNLOAD_MODEL_AT_BUILD: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start analyzer stack
+        run: docker compose up -d --build rabbitmq slm api worker
+
+      - name: Send PR analysis request
+        run: |
+          curl --retry 20 --retry-delay 3 --retry-connrefused -X POST http://localhost:8080/analyze \
+            -H "Content-Type: application/json" \
+            -d '{
+              "owner": "${{ github.repository_owner }}",
+              "repo": "${{ github.event.repository.name }}",
+              "pull_number": ${{ github.event.pull_request.number }},
+              "post_comment": true
+            }'
+
+      - name: Wait for report
+        run: sleep 20
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-quality-reports
+          path: reports/

@@ -1,0 +1,60 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./services/api
+    env_file: .env
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+    ports:
+      - "8080:8080"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./reports:/app/reports
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./services/worker
+    env_file: .env
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      REPORTS_DIR: /app/reports
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      slm:
+        condition: service_started
+    volumes:
+      - ./reports:/app/reports
+    restart: unless-stopped
+
+  slm:
+    build:
+      context: ./services/slm
+      args:
+        MODEL_ID: ${MODEL_ID:-Qwen/Qwen2.5-Coder-0.5B-Instruct}
+        DOWNLOAD_MODEL_AT_BUILD: ${DOWNLOAD_MODEL_AT_BUILD:-true}
+    env_file: .env
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      SLM_REQUEST_QUEUE: ${SLM_REQUEST_QUEUE:-slm.requests}
+      MODEL_ID: ${MODEL_ID:-Qwen/Qwen2.5-Coder-0.5B-Instruct}
+      SLM_BACKEND: ${SLM_BACKEND:-transformers}
+      MAX_NEW_TOKENS: ${MAX_NEW_TOKENS:-512}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
