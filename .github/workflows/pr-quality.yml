@@ -11,34 +11,69 @@ jobs:
       contents: read
       pull-requests: read
       issues: write
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GITHUB_WEBHOOK_SECRET: local-ci
-      POST_PR_COMMENT: "true"
-      SLM_BACKEND: mock
-      DOWNLOAD_MODEL_AT_BUILD: "false"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create analyzer environment
+        run: |
+          cat > .env <<EOF
+          RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+          PR_ANALYSIS_QUEUE=pr.analysis.requests
+          SLM_REQUEST_QUEUE=slm.requests
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          GITHUB_WEBHOOK_SECRET=local-ci
+          GITHUB_API_BASE_URL=https://api.github.com
+          GITHUB_API_VERSION=2022-11-28
+          POST_PR_COMMENT=true
+          UPDATE_EXISTING_PR_COMMENT=true
+          REPORTS_DIR=/app/reports
+          SLM_BACKEND=mock
+          DOWNLOAD_MODEL_AT_BUILD=false
+          MODEL_ID=Qwen/Qwen2.5-Coder-0.5B-Instruct
+          MAX_NEW_TOKENS=512
+          MAX_PATCH_CHARS=12000
+          EOF
 
       - name: Start analyzer stack
         run: docker compose up -d --build rabbitmq slm api worker
 
+      - name: Wait for API
+        run: |
+          curl --retry 30 --retry-delay 2 --retry-connrefused http://localhost:8080/health
+
       - name: Send PR analysis request
         run: |
-          curl --retry 20 --retry-delay 3 --retry-connrefused -X POST http://localhost:8080/analyze \
+          curl -X POST http://localhost:8080/analyze \
             -H "Content-Type: application/json" \
             -d '{
               "owner": "${{ github.repository_owner }}",
               "repo": "${{ github.event.repository.name }}",
               "pull_number": ${{ github.event.pull_request.number }},
+              "title": ${{ toJson(github.event.pull_request.title) }},
+              "html_url": "${{ github.event.pull_request.html_url }}",
+              "author": "${{ github.event.pull_request.user.login }}",
+              "base_sha": "${{ github.event.pull_request.base.sha }}",
+              "head_sha": "${{ github.event.pull_request.head.sha }}",
               "post_comment": true
             }'
 
-      - name: Wait for report
-        run: sleep 20
+      - name: Wait for report artifact
+        run: |
+          for i in {1..60}; do
+            if ls reports/*.md >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs api worker slm
+          exit 1
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
         with:
           name: pr-quality-reports
           path: reports/
+
+      - name: Stop analyzer stack
+        if: always()
+        run: docker compose down -v

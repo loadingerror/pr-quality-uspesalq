@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 
 from .config import settings
@@ -33,7 +31,11 @@ def build_slm_prompt(result: AnalysisResult) -> str:
         "repository": f"{result.job.owner}/{result.job.repo}",
         "pull_request": result.job.pull_number,
         "title": result.job.title,
+        "description_present": bool(result.job.pr_body and result.job.pr_body.strip()),
         "author": result.job.author,
+        "base_sha": result.job.base_sha,
+        "head_sha": result.job.head_sha,
+        "draft": result.job.draft,
         "risk_score": result.risk_score,
         "risk_level": result.risk_level,
         "summary_facts": result.summary_facts,
@@ -47,9 +49,10 @@ You are a senior code reviewer assisting a human who must approve or reject a Gi
 
 Rules:
 - Use ONLY the facts and diff excerpts provided below.
-- Do not invent files, risks, tests, or business context that are not present.
+- Do not invent files, risks, tests, runtime behavior, or business context.
 - Do not make the final approve/reject decision.
-- Be concise and practical.
+- Focus on what the human reviewer should verify before approval.
+- Be concise, direct, and practical.
 - Write in English.
 
 Return Markdown with exactly these sections:

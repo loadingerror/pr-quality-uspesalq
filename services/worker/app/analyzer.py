@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 from pathlib import PurePosixPath
 
@@ -121,6 +119,26 @@ def analyze_pr(job: PRJob, files: list[ChangedFile]) -> AnalysisResult:
         base_risk += 10
         summary_facts.append("Infrastructure, Docker, CI/CD or deployment file changed.")
 
+    if job.draft is True:
+        summary_facts.append("PR is currently marked as draft.")
+
+    if not job.pr_body or not job.pr_body.strip():
+        base_risk += 3
+        findings.append(
+            Finding(
+                severity="low",
+                category="pr_context",
+                message="PR description is empty or unavailable, reducing reviewer context.",
+            )
+        )
+
+    if len(files) > 30:
+        base_risk += 10
+        summary_facts.append("PR touches more than 30 files, increasing review complexity.")
+    elif len(files) > 15:
+        base_risk += 5
+        summary_facts.append("PR touches more than 15 files.")
+
     source_files_changed = any(not _is_test_file(f.filename) for f in files)
     if source_files_changed and not has_tests_changed:
         base_risk += 12
@@ -231,5 +249,4 @@ def analyze_pr(job: PRJob, files: list[ChangedFile]) -> AnalysisResult:
         has_tests_changed=has_tests_changed,
         has_dependency_changes=has_dependency_changes,
         has_infra_changes=has_infra_changes,
-        raw={},
     )

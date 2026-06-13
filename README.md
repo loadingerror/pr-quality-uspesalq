@@ -1,30 +1,31 @@
 # PR Quality Analyzer
 
-A service for analyzing Pull Request quality. It collects changes from GitHub, runs deterministic code-quality checks, sends normalized context to a local SLM through RabbitMQ, and generates a review report for the human who approves the PR.
+A GitHub-focused service for analyzing Pull Request quality. It receives GitHub PR events or manual analysis requests, collects changed files through the GitHub REST API, runs deterministic code-quality checks, sends normalized context to a local SLM through RabbitMQ, generates Markdown/JSON reports, and posts the final report as a managed comment on the Pull Request.
 
 ## What is included
 
-- **GitHub webhook/API endpoint**: accepts `pull_request` events or a manual PR analysis request.
-- **RabbitMQ**: queue for PR analysis jobs and RPC-style queue for SLM requests.
-- **Analysis worker**: receives changed files, analyzes the diff, calculates risk, and builds factual context.
-- **SLM inference service**: a separate Docker image with a local small language model for review-summary generation.
-- **Reports**: Markdown and JSON reports in the `reports/` directory.
-- **Optional GitHub comment**: the final report can be posted back to the GitHub PR.
+- **GitHub webhook endpoint** for `pull_request` events.
+- **Manual analysis endpoint** for GitHub Actions or local reruns.
+- **RabbitMQ** queues for PR analysis jobs and SLM inference requests.
+- **Analysis worker** that fetches PR metadata/files from GitHub, evaluates risk, and prepares factual review context.
+- **SLM inference service** as a separate Docker image.
+- **Managed GitHub PR comment**: the analyzer creates or updates a single PR timeline comment instead of creating duplicates.
+- **Local artifacts**: Markdown and JSON reports saved to the `reports/` directory.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    GH[GitHub Pull Request] -->|webhook / manual trigger| API[api-service FastAPI]
+    PR[GitHub Pull Request] -->|webhook or GitHub Actions| API[api-service FastAPI]
     API -->|pr.analysis.requests| MQ[(RabbitMQ)]
     MQ --> Worker[analysis-worker]
-    Worker -->|GitHub REST API: PR files/diff| GH
+    Worker -->|Pulls API / files API / comments API| GH[(GitHub REST API)]
     Worker -->|facts prompt: slm.requests| MQ
     MQ --> SLM[slm-service local model]
     SLM -->|RPC reply| MQ
     MQ --> Worker
     Worker --> Report[reports/*.md + *.json]
-    Worker -. optional PR comment .-> GH
+    Worker -. create or update PR comment .-> PR
 ```
 
 ## Quick local start
@@ -35,12 +36,13 @@ flowchart LR
 cp .env.example .env
 ```
 
-2. Fill the minimum required values:
+2. Fill the required GitHub values:
 
-```bash
-GITHUB_TOKEN=ghp_xxx
+```env
+GITHUB_TOKEN=github_pat_or_gh_token
 GITHUB_WEBHOOK_SECRET=change-me
-POST_PR_COMMENT=false
+POST_PR_COMMENT=true
+UPDATE_EXISTING_PR_COMMENT=true
 ```
 
 3. Start the stack:
@@ -49,25 +51,26 @@ POST_PR_COMMENT=false
 docker compose up --build
 ```
 
-RabbitMQ UI will be available at `http://localhost:15672` (`guest` / `guest`). The API will be available at `http://localhost:8080`.
+RabbitMQ UI will be available at `http://localhost:15672` with `guest` / `guest`. The API will be available at `http://localhost:8080`.
 
-4. Send a manual PR analysis request:
+4. Send a manual GitHub PR analysis request:
 
 ```bash
 curl -X POST http://localhost:8080/analyze \
   -H "Content-Type: application/json" \
   -d '{
-    "owner": "octocat",
-    "repo": "Hello-World",
-    "pull_number": 1
+    "owner": "my-org",
+    "repo": "my-repo",
+    "pull_number": 42,
+    "post_comment": true
   }'
 ```
 
-Reports will appear in `./reports`.
+The worker will fetch the PR from GitHub, analyze the changed files, save reports to `./reports`, and create or update the PR comment.
 
 ## Lightweight smoke test without GitHub
 
-You can pass changed files directly in the payload:
+You can pass changed files directly in the payload. This is useful for local testing without a real repository. The example disables PR commenting.
 
 ```bash
 curl -X POST http://localhost:8080/analyze \
@@ -75,24 +78,7 @@ curl -X POST http://localhost:8080/analyze \
   --data @examples/local_job.json
 ```
 
-## SLM inside a Docker image
-
-By default, `services/slm/Dockerfile` downloads the model during image build:
-
-```env
-MODEL_ID=Qwen/Qwen2.5-Coder-0.5B-Instruct
-SLM_BACKEND=transformers
-```
-
-For quick local tests without downloading the model, temporarily enable mock mode:
-
-```env
-SLM_BACKEND=mock
-```
-
-This keeps the RabbitMQ/RPC architecture intact, but returns a template summary instead of calling the model.
-
-## GitHub webhook
+## GitHub webhook setup
 
 Configure a webhook in your GitHub repository:
 
@@ -101,28 +87,87 @@ Configure a webhook in your GitHub repository:
 - Secret: value of `GITHUB_WEBHOOK_SECRET`
 - Events: `Pull requests`
 
-The service verifies `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET` is set.
+The API verifies `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET` is set.
+
+Supported PR actions:
+
+```text
+opened
+synchronize
+reopened
+ready_for_review
+```
 
 ## GitHub Actions option
 
-The file `.github/workflows/pr-quality.yml` shows how to trigger analysis from CI. For real usage, it is usually better to keep the service running continuously and connect it through a GitHub webhook. GitHub Actions can still be useful in self-hosted or restricted environments.
+The included workflow can run the analyzer inside GitHub Actions and post the report back to the PR.
+
+Workflow file:
+
+```text
+.github/workflows/pr-quality.yml
+```
+
+Required permissions:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+```
+
+Why `issues: write` is required: GitHub Pull Requests are also issues for timeline comments, so the analyzer posts the PR report through the issue comments endpoint.
+
+The workflow starts RabbitMQ, API, worker, and SLM containers locally, calls `/analyze`, waits for a report, uploads the generated artifacts, and updates the PR comment.
+
+## PR comment behavior
+
+The report is posted as a Pull Request timeline comment.
+
+To avoid duplicated bot comments, the worker adds a hidden marker:
+
+```html
+<!-- pr-quality-analyzer-report -->
+```
+
+On subsequent PR updates, the worker searches existing PR comments for that marker. If it finds one, it updates that comment. If not, it creates a new one.
+
+Relevant settings:
+
+```env
+POST_PR_COMMENT=true
+UPDATE_EXISTING_PR_COMMENT=true
+```
 
 ## How the report is built
 
-The report is built in two stages:
+The report is built in two stages.
 
-1. **Deterministic facts**:
-   - PR size;
-   - list of changed files;
-   - dependency and infrastructure changes;
-   - whether tests were changed;
-   - risky patterns: `eval`, `exec`, `shell=True`, `pickle.loads`, bare `except`, potential secrets;
-   - risk zones: auth, security, migrations, Docker, CI/CD, configuration files.
+### 1. Deterministic facts
 
-2. **SLM summary**:
-   - the model receives only structured facts and diff excerpts;
-   - the model does not make the final approval decision;
-   - the final recommendation remains with the human reviewer.
+The worker analyzes:
+
+- PR size;
+- number of changed files;
+- added/deleted lines;
+- dependency and lock-file changes;
+- Docker, CI/CD, and infrastructure changes;
+- test-file changes;
+- sensitive paths such as `auth`, `security`, `payment`, `migrations`, `iam`, and `secrets`;
+- risky Python patterns such as `eval`, `exec`, `pickle.loads`, `shell=True`, bare `except`, debug `print`, and `TODO/FIXME/HACK`;
+- possible secret leaks such as GitHub tokens, AWS access keys, private keys, and generic secret assignments;
+- missing PR description.
+
+### 2. SLM reviewer context
+
+The SLM receives only structured facts and limited diff excerpts. It does not make the final approval decision. It produces reviewer-oriented context with:
+
+- reviewer summary;
+- main risks;
+- manual checks;
+- questions for the PR author;
+- suggested review attention level.
 
 ## API
 
@@ -132,24 +177,25 @@ API liveness check.
 
 ### `POST /analyze`
 
-Manually enqueue a PR for analysis.
+Manually enqueue a GitHub PR for analysis.
 
 ```json
 {
   "owner": "my-org",
   "repo": "my-repo",
   "pull_number": 42,
-  "post_comment": false
+  "post_comment": true
 }
 ```
 
-For local mode, you can pass `changed_files` without GitHub:
+For local mode, you can pass `changed_files` without calling GitHub:
 
 ```json
 {
   "owner": "local",
   "repo": "demo",
   "pull_number": 1,
+  "post_comment": false,
   "changed_files": [
     {
       "filename": "src/app.py",
@@ -167,58 +213,46 @@ For local mode, you can pass `changed_files` without GitHub:
 
 Endpoint for GitHub `pull_request` webhooks.
 
-## Environment variables
+## SLM inside a Docker image
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `RABBITMQ_URL` | AMQP URL | `amqp://guest:guest@rabbitmq:5672/` |
-| `PR_ANALYSIS_QUEUE` | PR analysis job queue | `pr.analysis.requests` |
-| `SLM_REQUEST_QUEUE` | model request queue | `slm.requests` |
-| `GITHUB_TOKEN` | GitHub token for reading PRs and posting comments | empty |
-| `GITHUB_WEBHOOK_SECRET` | secret for webhook signature verification | empty |
-| `POST_PR_COMMENT` | post report as a PR comment | `false` |
-| `REPORTS_DIR` | reports directory | `/app/reports` |
-| `MODEL_ID` | Hugging Face model | `Qwen/Qwen2.5-Coder-0.5B-Instruct` |
-| `SLM_BACKEND` | `transformers` or `mock` | `transformers` |
+By default, `services/slm/Dockerfile` downloads the model during image build:
 
-## Development commands
-
-```bash
-make up
-make down
-make logs
-make test-worker
+```env
+MODEL_ID=Qwen/Qwen2.5-Coder-0.5B-Instruct
+SLM_BACKEND=transformers
 ```
 
-## MVP limitations
+For quick local tests without downloading the model, enable mock mode:
 
-- The analyzer works on PR diff and metadata; it does not build a full AST of the entire project.
-- The SLM must not block merges automatically: it assists the reviewer but does not replace code review.
-- Large PRs should use diff chunking and persistent result storage, such as PostgreSQL or S3.
-- Production deployments should prefer GitHub App installation tokens over long-lived personal access tokens.
+```env
+SLM_BACKEND=mock
+DOWNLOAD_MODEL_AT_BUILD=false
+```
 
-## Recommended next improvements
+This keeps the RabbitMQ/RPC architecture intact, but returns a deterministic template summary instead of calling the model.
 
-- Add Python/JavaScript AST analysis.
-- Add Semgrep, Bandit, and Ruff checks to the worker.
-- Add a database for historical PR quality metrics.
-- Add quality gates based on risk scoring.
-- Add vector memory for previous PRs in the same project.
-- Add comparison against team-specific coding standards.
+## Useful commands
 
-## Sources
+```bash
+make test
+make smoke
+make logs
+```
 
-- [GitHub Docs — Webhook events and payloads: pull_request](https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request)
-- [GitHub Docs — REST API: Pull requests](https://docs.github.com/en/rest/pulls/pulls)
-- [GitHub Docs — REST API: Review comments](https://docs.github.com/en/rest/pulls/comments)
-- [GitHub Docs — REST API: Create an issue comment](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment)
-- [GitHub Docs — Securing your webhooks](https://docs.github.com/en/webhooks/using-webhooks/securing-your-webhooks)
-- [Docker Hub — RabbitMQ official image](https://hub.docker.com/_/rabbitmq)
-- [RabbitMQ Docs — Work Queues](https://www.rabbitmq.com/tutorials/tutorial-two-python)
-- [RabbitMQ Docs — RPC pattern](https://www.rabbitmq.com/tutorials/tutorial-six-python)
-- [FastAPI Docs](https://fastapi.tiangolo.com/)
-- [Pika Docs — Python RabbitMQ client](https://pika.readthedocs.io/)
-- [Hugging Face — Qwen/Qwen2.5-Coder-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct)
-- [Qwen2.5-Coder Technical Report](https://arxiv.org/abs/2409.12186)
-- [Docker Docs — Compose file reference](https://docs.docker.com/reference/compose-file/)
-- [GitHub Docs — GitHub Actions workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
+Or directly:
+
+```bash
+docker compose logs -f api worker slm
+```
+
+## Required GitHub token scopes
+
+For a fine-grained personal access token or GitHub App token, grant the equivalent of:
+
+```text
+Pull requests: read
+Contents: read
+Issues: write
+```
+
+For GitHub Actions, use the workflow `permissions` block shown above.
