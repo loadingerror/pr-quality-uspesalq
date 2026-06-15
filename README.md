@@ -1,59 +1,59 @@
-# PR Quality Analyzer
+# Analisador de Qualidade de PR
 
-A GitHub-focused service for analyzing Pull Request quality. It receives GitHub PR events or manual analysis requests, collects changed files through the GitHub REST API, runs deterministic code-quality checks, sends normalized context to a local SLM through RabbitMQ, generates Markdown/JSON reports, and posts the final report as a managed comment on the Pull Request.
+Um serviço focado no GitHub para análise da qualidade de *Pull Requests* (PRs). Ele recebe eventos de PR do GitHub ou solicitações manuais de análise, coleta os arquivos modificados por meio da API REST do GitHub, executa verificações determinísticas de qualidade de código, envia um contexto normalizado para um SLM local por meio do RabbitMQ, gera relatórios em Markdown/JSON e publica o relatório final como um comentário gerenciado na *Pull Request*.
 
-## What is included
+## O que está incluído
 
-- **GitHub webhook endpoint** for `pull_request` events.
-- **Manual analysis endpoint** for GitHub Actions or local reruns.
-- **RabbitMQ** queues for PR analysis jobs and SLM inference requests.
-- **Analysis worker** that fetches PR metadata/files from GitHub, evaluates risk, and prepares factual review context.
-- **SLM inference service** as a separate Docker image.
-- **Managed GitHub PR comment**: the analyzer creates or updates a single PR timeline comment instead of creating duplicates.
-- **Local artifacts**: Markdown and JSON reports saved to the `reports/` directory.
+* **Endpoint de webhook do GitHub** para eventos `pull_request`.
+* **Endpoint de análise manual** para GitHub Actions ou reexecuções locais.
+* **Filas RabbitMQ** para trabalhos de análise de PR e solicitações de inferência do SLM.
+* **Worker de análise** que obtém metadados e arquivos da PR no GitHub, avalia riscos e prepara um contexto factual para revisão.
+* **Serviço de inferência SLM** como uma imagem Docker separada.
+* **Comentário gerenciado na PR do GitHub**: o analisador cria ou atualiza um único comentário na linha do tempo da PR em vez de criar duplicados.
+* **Artefatos locais**: relatórios em Markdown e JSON salvos no diretório `reports/`.
 
-## Architecture
+## Arquitetura
 
 ```mermaid
 flowchart LR
-    PR[GitHub Pull Request] -->|webhook or GitHub Actions| API[api-service FastAPI]
+    PR[Pull Request do GitHub] -->|webhook ou GitHub Actions| API[api-service FastAPI]
     API -->|pr.analysis.requests| MQ[(RabbitMQ)]
     MQ --> Worker[analysis-worker]
-    Worker -->|Pulls API / files API / comments API| GH[(GitHub REST API)]
-    Worker -->|facts prompt: slm.requests| MQ
-    MQ --> SLM[slm-service local model]
-    SLM -->|RPC reply| MQ
+    Worker -->|API de Pull Requests / API de arquivos / API de comentários| GH[(API REST do GitHub)]
+    Worker -->|prompt factual: slm.requests| MQ
+    MQ --> SLM[slm-service modelo local]
+    SLM -->|resposta RPC| MQ
     MQ --> Worker
     Worker --> Report[reports/*.md + *.json]
-    Worker -. create or update PR comment .-> PR
+    Worker -. cria ou atualiza comentário da PR .-> PR
 ```
 
-## Quick local start
+## Inicialização rápida local
 
-1. Create `.env`:
+1. Crie o arquivo `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-2. Fill the required GitHub values:
+2. Preencha os valores obrigatórios do GitHub:
 
 ```env
-GITHUB_TOKEN=github_pat_or_gh_token
-GITHUB_WEBHOOK_SECRET=change-me
+GITHUB_TOKEN=github_pat_ou_gh_token
+GITHUB_WEBHOOK_SECRET=altere-este-valor
 POST_PR_COMMENT=true
 UPDATE_EXISTING_PR_COMMENT=true
 ```
 
-3. Start the stack:
+3. Inicie a stack:
 
 ```bash
 docker compose up --build
 ```
 
-RabbitMQ UI will be available at `http://localhost:15672` with `guest` / `guest`. The API will be available at `http://localhost:8080`.
+A interface do RabbitMQ estará disponível em `http://localhost:15672` com usuário `guest` e senha `guest`. A API estará disponível em `http://localhost:8080`.
 
-4. Send a manual GitHub PR analysis request:
+4. Envie uma solicitação manual de análise de PR do GitHub:
 
 ```bash
 curl -X POST http://localhost:8080/analyze \
@@ -66,11 +66,11 @@ curl -X POST http://localhost:8080/analyze \
   }'
 ```
 
-The worker will fetch the PR from GitHub, analyze the changed files, save reports to `./reports`, and create or update the PR comment.
+O *worker* buscará a PR no GitHub, analisará os arquivos modificados, salvará os relatórios em `./reports` e criará ou atualizará o comentário da PR.
 
-## Lightweight smoke test without GitHub
+## Teste rápido sem GitHub
 
-You can pass changed files directly in the payload. This is useful for local testing without a real repository. The example disables PR commenting.
+Você pode fornecer os arquivos modificados diretamente na requisição. Isso é útil para testes locais sem um repositório real. O exemplo abaixo desabilita a publicação de comentários na PR.
 
 ```bash
 curl -X POST http://localhost:8080/analyze \
@@ -78,18 +78,18 @@ curl -X POST http://localhost:8080/analyze \
   --data @examples/local_job.json
 ```
 
-## GitHub webhook setup
+## Configuração do webhook do GitHub
 
-Configure a webhook in your GitHub repository:
+Configure um webhook no seu repositório GitHub:
 
-- Payload URL: `https://<your-domain>/webhook/github`
-- Content type: `application/json`
-- Secret: value of `GITHUB_WEBHOOK_SECRET`
-- Events: `Pull requests`
+* URL de payload: `https://<seu-dominio>/webhook/github`
+* Tipo de conteúdo: `application/json`
+* Segredo: valor de `GITHUB_WEBHOOK_SECRET`
+* Eventos: `Pull requests`
 
-The API verifies `X-Hub-Signature-256` when `GITHUB_WEBHOOK_SECRET` is set.
+A API valida o cabeçalho `X-Hub-Signature-256` quando `GITHUB_WEBHOOK_SECRET` estiver configurado.
 
-Supported PR actions:
+Ações de PR suportadas:
 
 ```text
 opened
@@ -98,17 +98,17 @@ reopened
 ready_for_review
 ```
 
-## GitHub Actions option
+## Opção com GitHub Actions
 
-The included workflow can run the analyzer inside GitHub Actions and post the report back to the PR.
+O workflow incluído pode executar o analisador dentro do GitHub Actions e publicar o relatório de volta na PR.
 
-Workflow file:
+Arquivo do workflow:
 
 ```text
 .github/workflows/pr-quality.yml
 ```
 
-Required permissions:
+Permissões necessárias:
 
 ```yaml
 permissions:
@@ -117,67 +117,67 @@ permissions:
   issues: write
 ```
 
-Why `issues: write` is required: GitHub Pull Requests are also issues for timeline comments, so the analyzer posts the PR report through the issue comments endpoint.
+Por que `issues: write` é necessário: no GitHub, *Pull Requests* também são tratadas como *issues* para comentários na linha do tempo. Por isso, o analisador publica o relatório utilizando o endpoint de comentários de *issues*.
 
-The workflow starts RabbitMQ, API, worker, and SLM containers locally, calls `/analyze`, waits for a report, uploads the generated artifacts, and updates the PR comment.
+O workflow inicia localmente os contêineres RabbitMQ, API, worker e SLM, chama o endpoint `/analyze`, aguarda a geração do relatório, faz o upload dos artefatos gerados e atualiza o comentário da PR.
 
-## PR comment behavior
+## Comportamento do comentário na PR
 
-The report is posted as a Pull Request timeline comment.
+O relatório é publicado como um comentário na linha do tempo da *Pull Request*.
 
-To avoid duplicated bot comments, the worker adds a hidden marker:
+Para evitar comentários duplicados do bot, o *worker* adiciona um marcador oculto:
 
 ```html
 <!-- pr-quality-analyzer-report -->
 ```
 
-On subsequent PR updates, the worker searches existing PR comments for that marker. If it finds one, it updates that comment. If not, it creates a new one.
+Nas atualizações subsequentes da PR, o *worker* procura comentários existentes contendo esse marcador. Se encontrar um, ele atualiza o comentário. Caso contrário, cria um novo.
 
-Relevant settings:
+Configurações relacionadas:
 
 ```env
 POST_PR_COMMENT=true
 UPDATE_EXISTING_PR_COMMENT=true
 ```
 
-## How the report is built
+## Como o relatório é construído
 
-The report is built in two stages.
+O relatório é construído em duas etapas.
 
-### 1. Deterministic facts
+### 1. Fatos determinísticos
 
-The worker analyzes:
+O *worker* analisa:
 
-- PR size;
-- number of changed files;
-- added/deleted lines;
-- dependency and lock-file changes;
-- Docker, CI/CD, and infrastructure changes;
-- test-file changes;
-- sensitive paths such as `auth`, `security`, `payment`, `migrations`, `iam`, and `secrets`;
-- risky Python patterns such as `eval`, `exec`, `pickle.loads`, `shell=True`, bare `except`, debug `print`, and `TODO/FIXME/HACK`;
-- possible secret leaks such as GitHub tokens, AWS access keys, private keys, and generic secret assignments;
-- missing PR description.
+* tamanho da PR;
+* quantidade de arquivos modificados;
+* linhas adicionadas/removidas;
+* alterações em dependências e arquivos de bloqueio (*lock files*);
+* alterações em Docker, CI/CD e infraestrutura;
+* alterações em arquivos de teste;
+* caminhos sensíveis como `auth`, `security`, `payment`, `migrations`, `iam` e `secrets`;
+* padrões Python de risco, como `eval`, `exec`, `pickle.loads`, `shell=True`, `except` genérico, `print` de depuração e marcadores `TODO/FIXME/HACK`;
+* possíveis vazamentos de segredos, como tokens GitHub, chaves AWS, chaves privadas e atribuições genéricas de segredos;
+* ausência de descrição da PR.
 
-### 2. SLM reviewer context
+### 2. Contexto de revisão fornecido pelo SLM
 
-The SLM receives only structured facts and limited diff excerpts. It does not make the final approval decision. It produces reviewer-oriented context with:
+O SLM recebe apenas fatos estruturados e trechos limitados dos diffs. Ele não toma a decisão final de aprovação. Seu papel é produzir contexto orientado ao revisor, incluindo:
 
-- reviewer summary;
-- main risks;
-- manual checks;
-- questions for the PR author;
-- suggested review attention level.
+* resumo para o revisor;
+* principais riscos;
+* verificações manuais recomendadas;
+* perguntas para o autor da PR;
+* nível de atenção sugerido para a revisão.
 
 ## API
 
 ### `GET /health`
 
-API liveness check.
+Verificação de disponibilidade da API.
 
 ### `POST /analyze`
 
-Manually enqueue a GitHub PR for analysis.
+Enfileira manualmente uma PR do GitHub para análise.
 
 ```json
 {
@@ -188,7 +188,7 @@ Manually enqueue a GitHub PR for analysis.
 }
 ```
 
-For local mode, you can pass `changed_files` without calling GitHub:
+Para modo local, é possível enviar `changed_files` sem consultar o GitHub:
 
 ```json
 {
@@ -211,27 +211,27 @@ For local mode, you can pass `changed_files` without calling GitHub:
 
 ### `POST /webhook/github`
 
-Endpoint for GitHub `pull_request` webhooks.
+Endpoint para webhooks `pull_request` do GitHub.
 
-## SLM inside a Docker image
+## SLM dentro de uma imagem Docker
 
-By default, `services/slm/Dockerfile` downloads the model during image build:
+Por padrão, o arquivo `services/slm/Dockerfile` baixa o modelo durante a construção da imagem:
 
 ```env
 MODEL_ID=Qwen/Qwen2.5-Coder-0.5B-Instruct
 SLM_BACKEND=transformers
 ```
 
-For quick local tests without downloading the model, enable mock mode:
+Para testes rápidos sem baixar o modelo, habilite o modo simulado (*mock*):
 
 ```env
 SLM_BACKEND=mock
 DOWNLOAD_MODEL_AT_BUILD=false
 ```
 
-This keeps the RabbitMQ/RPC architecture intact, but returns a deterministic template summary instead of calling the model.
+Isso mantém a arquitetura RabbitMQ/RPC intacta, mas retorna um resumo determinístico baseado em template em vez de chamar o modelo.
 
-## Useful commands
+## Comandos úteis
 
 ```bash
 make test
@@ -239,15 +239,15 @@ make smoke
 make logs
 ```
 
-Or directly:
+Ou diretamente:
 
 ```bash
 docker compose logs -f api worker slm
 ```
 
-## Required GitHub token scopes
+## Escopos necessários para o token do GitHub
 
-For a fine-grained personal access token or GitHub App token, grant the equivalent of:
+Para um *Personal Access Token* granular ou token de GitHub App, conceda permissões equivalentes a:
 
 ```text
 Pull requests: read
@@ -255,4 +255,5 @@ Contents: read
 Issues: write
 ```
 
-For GitHub Actions, use the workflow `permissions` block shown above.
+Para GitHub Actions, utilize o bloco `permissions` apresentado anteriormente no workflow.
+
